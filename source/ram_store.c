@@ -1,0 +1,240 @@
+#include "vtfs.h"
+#include <linux/slab.h>
+#include <linux/string.h>
+
+struct vtfs_file* vtfs_find_file_by_ino(struct vtfs_dir* dir, ino_t ino) {
+    struct vtfs_file* file;
+
+    if (!dir)
+        return NULL;
+
+    down_read(&dir->sem);
+    list_for_each_entry(file, &dir->files, list) {
+        if (file->ino == ino) {
+            up_read(&dir->sem);
+            return file;
+        }
+        if (file->dir_data) {
+            struct vtfs_file* found =
+                vtfs_find_file_by_ino(file->dir_data, ino);
+            if (found) {
+                up_read(&dir->sem);
+                return found;
+            }
+        }
+    }
+    up_read(&dir->sem);
+    return NULL;
+}
+
+struct vtfs_file* vtfs_find_file(struct vtfs_dir* dir, const char* name) {
+    struct vtfs_file* file;
+
+    if (!dir)
+        return NULL;
+
+    list_for_each_entry(file, &dir->files, list) {
+        if (strcmp(file->name, name) == 0)
+            return file;
+    }
+
+    return NULL;
+}
+
+struct vtfs_file* vtfs_create_file(
+    struct vtfs_dir* dir,
+    const char* name,
+    umode_t mode,
+    ino_t ino
+) {
+    struct vtfs_file* file;
+
+    if (!dir || !name || strlen(name) >= VTFS_MAX_NAME)
+        return NULL;
+
+    if (vtfs_find_file(dir, name))
+        return NULL;
+
+    file = kzalloc(sizeof(*file), GFP_KERNEL);
+    if (!file)
+        return NULL;
+
+    INIT_LIST_HEAD(&file->list);
+    file->ino  = ino;
+    file->mode = mode;
+    file->nlink = 1;
+
+    strscpy(file->name, name, VTFS_MAX_NAME);
+
+    if (S_ISDIR(mode)) {
+        file->dir_data = kzalloc(sizeof(struct vtfs_dir), GFP_KERNEL);
+        if (!file->dir_data) {
+            kfree(file);
+            return NULL;
+        }
+        INIT_LIST_HEAD(&file->dir_data->files);
+        init_rwsem(&file->dir_data->sem);
+    }
+
+    list_add_tail(&file->list, &dir->files);
+    return file;
+}
+
+
+int vtfs_remove_file(struct vtfs_dir* dir, const char* name) {
+    struct vtfs_file* file;
+
+    if (!dir || !name)
+        return -ENOENT;
+
+    down_write(&dir->sem);
+    file = vtfs_find_file(dir, name);
+    if (!file) {
+        up_write(&dir->sem);
+        return -ENOENT;
+    }
+
+    list_del(&file->list);
+    up_write(&dir->sem);
+
+    if (file->dir_data) {
+        vtfs_cleanup_dir(file->dir_data);
+        kfree(file->dir_data);
+    }
+
+    kfree(file->data);
+    kfree(file);
+
+    return 0;
+}
+
+void vtfs_cleanup_dir(struct vtfs_dir* dir) {
+    struct vtfs_file* file;
+    struct vtfs_file* tmp;
+
+    if (!dir)
+        return;
+
+    down_write(&dir->sem);
+    list_for_each_entry_safe(file, tmp, &dir->files, list) {
+        list_del(&file->list);
+
+        if (file->dir_data) {
+            vtfs_cleanup_dir(file->dir_data);
+            kfree(file->dir_data);
+        }
+
+        kfree(file->data);
+        kfree(file);
+    }
+    up_write(&dir->sem);
+}
+
+struct vtfs_dir* vtfs_get_dir(struct super_block* sb, struct inode* inode) {
+    struct vtfs_fs_info* info;
+    struct vtfs_file* file;
+
+    if (!sb || !inode)
+        return NULL;
+
+    info = sb->s_fs_info;
+    if (!info)
+        return NULL;
+
+    if (inode->i_ino == VTFS_ROOT_INO)
+        return &info->root_dir;
+
+    file = vtfs_find_file_by_ino(&info->root_dir, inode->i_ino);
+    if (file && S_ISDIR(file->mode))
+        return file->dir_data;
+
+    return NULL;
+}
+
+struct vtfs_file* vtfs_get_file_by_inode(struct inode* inode) {
+    struct vtfs_fs_info* info;
+
+    if (!inode || !inode->i_sb)
+        return NULL;
+
+    info = inode->i_sb->s_fs_info;
+    if (!info)
+        return NULL;
+
+    return vtfs_find_file_by_ino(&info->root_dir, inode->i_ino);
+}
+
+void vtfs_update_nlink_all(struct vtfs_dir* dir, ino_t ino, unsigned int nlink) {
+    struct vtfs_file* file;
+
+    if (!dir)
+        return;
+
+    down_write(&dir->sem);
+    list_for_each_entry(file, &dir->files, list) {
+        if (file->ino == ino)
+            file->nlink = nlink;
+    }
+    up_write(&dir->sem);
+
+    down_read(&dir->sem);
+    list_for_each_entry(file, &dir->files, list) {
+        if (file->dir_data)
+            vtfs_update_nlink_all(file->dir_data, ino, nlink);
+    }
+    up_read(&dir->sem);
+}
+
+void vtfs_update_data_all(
+    struct vtfs_dir* dir,
+    ino_t ino,
+    char* old_data,
+    char* new_data,
+    size_t new_size
+) {
+    struct vtfs_file* file;
+
+    if (!dir)
+        return;
+
+    down_write(&dir->sem);
+    list_for_each_entry(file, &dir->files, list) {
+        if (file->ino == ino && file->data == old_data) {
+            file->data = new_data;
+            file->data_size = new_size;
+        }
+    }
+    up_write(&dir->sem);
+
+    down_read(&dir->sem);
+    list_for_each_entry(file, &dir->files, list) {
+        if (file->dir_data)
+            vtfs_update_data_all(file->dir_data, ino, old_data, new_data, new_size);
+    }
+    up_read(&dir->sem);
+}
+
+void vtfs_remove_all_by_ino(struct vtfs_dir* dir, ino_t ino) {
+    struct vtfs_file* file;
+    struct vtfs_file* tmp;
+
+    if (!dir)
+        return;
+
+    down_write(&dir->sem);
+    list_for_each_entry_safe(file, tmp, &dir->files, list) {
+        if (file->ino == ino) {
+            list_del(&file->list);
+            kfree(file);
+        }
+    }
+    up_write(&dir->sem);
+
+    down_read(&dir->sem);
+    list_for_each_entry(file, &dir->files, list) {
+        if (file->dir_data) {
+            vtfs_remove_all_by_ino(file->dir_data, ino);
+        }
+    }
+    up_read(&dir->sem);
+}
