@@ -1,5 +1,8 @@
 #!/bin/bash
-# VTFS filesystem test (RAM mode only)
+# VTFS filesystem test
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
 
 set -e
 
@@ -11,16 +14,14 @@ step() { echo ""; echo "==> $1"; }
 
 cleanup() {
   step "Cleanup"
-  if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
-    echo "Unmounting $MOUNT_POINT"
-    umount "$MOUNT_POINT" || true
-    sleep 1
-  fi
-  if lsmod | grep -q "^$MODULE_NAME "; then
-    echo "Removing module $MODULE_NAME"
-    rmmod "$MODULE_NAME" || true
-  fi
+  sync
+  sleep 0.5
+  cd /
+  umount -l "$MP" 2>/dev/null || true
+  sleep 0.5
+  rmmod "$MODULE_NAME" 2>/dev/null || true
 }
+
 
 if [ "$EUID" -ne 0 ]; then
   echo "Run as root: sudo $0"
@@ -54,6 +55,8 @@ if mountpoint -q "$MOUNT_POINT"; then
 else
   mount -t vtfs none "$MOUNT_POINT" -o token=""
 fi
+
+pwd
 
 # file
 step "Test: file creation"

@@ -40,8 +40,14 @@ mount:
 
 reload: umount rmmod all insmod mount
 
-test:
+test: 
+	sudo ./scripts/test_all.sh
+
+test-ram:
 	sudo ./scripts/test_ram.sh
+
+test-hardlink:
+	sudo ./scripts/test_hard_link.sh
 
 logs:
 	sudo dmesg | grep "\[vtfs\]" | tail -n 80
