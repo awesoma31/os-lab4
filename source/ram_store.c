@@ -2,44 +2,43 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 
+// ok
 struct vtfs_file* vtfs_find_file_by_ino(struct vtfs_dir* dir, ino_t ino) {
-    struct vtfs_file* file;
-
-    if (!dir)
-        return NULL;
-
-    down_read(&dir->sem);
-    list_for_each_entry(file, &dir->files, list) {
-        if (file->ino == ino) {
-            up_read(&dir->sem);
-            return file;
-        }
-        if (file->dir_data) {
-            struct vtfs_file* found =
-                vtfs_find_file_by_ino(file->dir_data, ino);
-            if (found) {
-                up_read(&dir->sem);
-                return found;
-            }
-        }
+  struct vtfs_file* file;
+  
+  if (!dir) return NULL;
+  
+  down_read(&dir->sem);
+  list_for_each_entry(file, &dir->files, list) {
+    if (file->ino == ino) {
+      up_read(&dir->sem);
+      return file;
     }
-    up_read(&dir->sem);
-    return NULL;
+    if (file->dir_data) {
+      struct vtfs_file* found = vtfs_find_file_by_ino(file->dir_data, ino);
+      if (found) {
+        up_read(&dir->sem);
+        return found;
+      }
+    }
+  }
+  up_read(&dir->sem);
+  return NULL;
 }
 
+// ok
 struct vtfs_file* vtfs_find_file(struct vtfs_dir* dir, const char* name) {
-    struct vtfs_file* file;
-
-    if (!dir)
-        return NULL;
-
-    list_for_each_entry(file, &dir->files, list) {
-        if (strcmp(file->name, name) == 0)
-            return file;
+  struct vtfs_file* file;
+  if (!dir) return NULL;
+  
+  list_for_each_entry(file, &dir->files, list) {
+    if (!strcmp(file->name, name)) {
+      return file;
     }
-
-    return NULL;
+  }
+  return NULL;
 }
+
 
 struct vtfs_file* vtfs_create_file(
     struct vtfs_dir* dir,

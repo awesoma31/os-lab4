@@ -98,40 +98,6 @@ int vtfs_create(struct mnt_idmap *idmap,
     return 0;
 }
 
-/* unlink */
-
-int vtfs_unlink(struct inode *parent, struct dentry *dentry)
-{
-    struct vtfs_dir *dir = vtfs_get_dir(parent->i_sb, parent);
-    struct vtfs_file *file;
-
-    if (!dir)
-        return -ENOENT;
-
-    down_write(&dir->sem);
-    file = vtfs_find_file(dir, dentry->d_name.name);
-    if (!file) {
-        up_write(&dir->sem);
-        return -ENOENT;
-    }
-
-    list_del(&file->list);
-    file->nlink--;
-    up_write(&dir->sem);
-
-    set_nlink(d_inode(dentry), file->nlink);
-
-    if (file->nlink == 0) {
-        if (file->data)
-            kfree(file->data);
-        if (file->dir_data)
-            kfree(file->dir_data);
-        kfree(file);
-    }
-
-    return 0;
-}
-
 /* mkdir / rmdir */
 
 int vtfs_mkdir(struct mnt_idmap *idmap,
@@ -185,33 +151,132 @@ int vtfs_rmdir(struct inode *parent, struct dentry *dentry)
 }
 
 /* hard link */
-
 int vtfs_link(struct dentry *old, struct inode *parent, struct dentry *new)
 {
     struct vtfs_dir *dir = vtfs_get_dir(parent->i_sb, parent);
-    struct vtfs_file *src, *link;
+    struct vtfs_file *src, *new_file;
+    struct inode *inode = d_inode(old);
+    struct vtfs_fs_info *info = parent->i_sb->s_fs_info;
+    const char *name = new->d_name.name;
 
-    if (!dir)
+    if (!old || !parent || !new) {
+        return -EINVAL;
+    }
+    
+    inode = old->d_inode;
+    if (!dir || !inode)
         return -ENOENT;
 
-    src = vtfs_get_file_by_inode(d_inode(old));
+    if (S_ISDIR(inode->i_mode)) {
+        return -EPERM;
+    }
+
+    //
+    src = vtfs_get_file_by_inode(inode);
     if (!src)
         return -ENOENT;
 
     down_write(&dir->sem);
 
-    link = kzalloc(sizeof(*link), GFP_KERNEL);
-    *link = *src;
-    strscpy(link->name, new->d_name.name, VTFS_MAX_NAME);
-    INIT_LIST_HEAD(&link->list);
+    if (vtfs_find_file(dir, name)) {
+        up_write(&dir->sem);
+        return -EEXIST;
+    }
+
+    new_file = kzalloc(sizeof(*new_file), GFP_KERNEL);
+    if (!new_file) {
+        up_write(&dir->sem);
+        return -ENOMEM;
+    }
+
+    INIT_LIST_HEAD(&new_file->list);
+    new_file->ino = src->ino;
+    new_file->mode = src->mode;
+    strscpy(new_file->name, name, VTFS_MAX_NAME - 1);
+    new_file->name[VTFS_MAX_NAME - 1] = '\0';
+    new_file->dir_data = NULL;
+    new_file->data = src->data;
+    new_file->data_size = src->data_size;
 
     src->nlink++;
-    link->nlink = src->nlink;
+    new_file->nlink = src->nlink;
 
-    list_add_tail(&link->list, &dir->files);
+    list_add_tail(&new_file->list, &dir->files);
     up_write(&dir->sem);
 
-    inc_nlink(d_inode(old));
-    d_instantiate(new, d_inode(old));
+    if (info)
+        vtfs_update_nlink_all(&info->root_dir, src->ino, src->nlink);
+
+    set_nlink(inode, src->nlink);
+
+    ihold(inode);
+    d_instantiate(new, inode);
+
+    return 0;
+}
+
+
+/* unlink */
+int vtfs_unlink(struct inode *parent, struct dentry *dentry)
+{
+    struct vtfs_dir *dir = vtfs_get_dir(parent->i_sb, parent);
+    struct vtfs_file *file, *main_file;
+    struct inode *inode = d_inode(dentry);
+    struct vtfs_fs_info *info = parent->i_sb->s_fs_info;
+    const char *name;
+    ino_t ino;
+    unsigned int new_nlink;
+
+    char *data_to_free = NULL;
+    struct vtfs_dir *dir_data_to_free = NULL;
+    bool should_free_data = false;
+
+    if (!dir || !inode)
+        return -ENOENT;
+
+    name = dentry->d_name.name;
+    ino = inode->i_ino;
+
+    main_file = vtfs_get_file_by_inode(inode);
+    if (!main_file)
+        return -ENOENT;
+
+    new_nlink = (main_file->nlink > 0) ? (main_file->nlink - 1) : 0;
+    should_free_data = (new_nlink == 0);
+
+    down_write(&dir->sem);
+
+    file = vtfs_find_file(dir, name);
+    if (!file || file->ino != ino) {
+        up_write(&dir->sem);
+        return -ENOENT;
+    }
+
+    if (should_free_data) {
+        data_to_free = file->data;
+        dir_data_to_free = file->dir_data;
+    }
+
+    list_del(&file->list);
+    up_write(&dir->sem);
+
+    kfree(file);
+
+    if (info)
+        vtfs_update_nlink_all(&info->root_dir, ino, new_nlink);
+
+    set_nlink(inode, new_nlink);
+
+    if (should_free_data) {
+        if (info)
+            vtfs_remove_all_by_ino(&info->root_dir, ino);
+
+        if (dir_data_to_free) {
+            vtfs_cleanup_dir(dir_data_to_free);
+            kfree(dir_data_to_free);
+        }
+        kfree(data_to_free);
+    }
+
     return 0;
 }
