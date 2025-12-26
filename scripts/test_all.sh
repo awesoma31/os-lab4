@@ -13,6 +13,40 @@ MODULE_FILE="$ROOT_DIR/${MODULE_NAME}.ko"
 # ------------------------------
 # Helpers
 # ------------------------------
+
+is_mounted() {
+  grep -qsE "[[:space:]]${MOUNT_POINT}[[:space:]]" /proc/mounts
+}
+
+cleanup() {
+  echo ""
+  echo "==> Cleanup"
+  cd / || true
+
+  if is_mounted; then
+    echo "Request umount -l (async)"
+    ( umount -l "$MOUNT_POINT" >/dev/null 2>&1 || true ) &
+    sleep 0.2
+  fi
+
+  if is_mounted; then
+    echo "Still mounted -> fuser -km (async) and retry umount -l"
+    ( fuser -km "$MOUNT_POINT" >/dev/null 2>&1 || true ) &
+    sleep 0.5
+    ( umount -l "$MOUNT_POINT" >/dev/null 2>&1 || true ) &
+    sleep 0.2
+  fi
+
+  if lsmod | grep -q "^$MODULE_NAME "; then
+    echo "Request rmmod (async)"
+    ( rmmod "$MODULE_NAME" >/dev/null 2>&1 || true ) &
+    sleep 0.2
+  fi
+
+  echo "Cleanup requested (non-blocking)."
+}
+
+
 step() {
   echo ""
   echo "==> $1"
@@ -41,8 +75,8 @@ cleanup() {
   fi
 }
 
-# Cleanup on Ctrl+C or kill
-trap cleanup INT TERM
+trap cleanup EXIT INT TERM
+
 
 # ------------------------------
 # Root check
@@ -175,6 +209,4 @@ cat "$MOUNT_POINT/final.txt" | grep -q "final" || die "FS unusable after operati
 echo ""
 echo "ALL VTFS TESTS PASSED SUCCESSFULLY"
 
-# Explicit cleanup (better than EXIT trap)
-cleanup
 exit 0

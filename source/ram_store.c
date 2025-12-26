@@ -1,6 +1,8 @@
-#include "vtfs.h"
 #include <linux/slab.h>
 #include <linux/string.h>
+
+#include "vtfs.h"
+#include "vtfs_ram_store.h"
 
 struct vtfs_file* vtfs_find_file_by_ino(struct vtfs_dir* dir, ino_t ino) {
   struct vtfs_file* file;
@@ -98,19 +100,60 @@ int vtfs_remove_file(struct vtfs_dir* dir, const char* name) {
         kfree(file->dir_data);
     }
 
-    kfree(file->data);
+    if (file->data) kfree(file->data);
     kfree(file);
 
     return 0;
 }
 
-void vtfs_cleanup_dir(struct vtfs_dir* dir) {
-    struct vtfs_file* file;
-    struct vtfs_file* tmp;
+/* ram_store.c */
+
+void vtfs_cleanup_dir(struct vtfs_dir *dir)
+{
+    struct vtfs_file *file, *tmp;
+
+    /* список уникальных data-указателей, чтобы не было double-free на hard links */
+    struct list_head data_list;
+    struct data_ptr_entry *data_entry, *data_tmp;
+    bool found;
 
     if (!dir)
         return;
 
+    INIT_LIST_HEAD(&data_list);
+
+    /*
+     * 1) Собираем уникальные file->data (read-lock).
+     *    Здесь мы НЕ трогаем сам список dir->files, только читаем.
+     */
+    down_read(&dir->sem);
+    list_for_each_entry(file, &dir->files, list) {
+        if (!file->data)
+            continue;
+
+        found = false;
+        list_for_each_entry(data_entry, &data_list, list) {
+            if (data_entry->data == file->data) {
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) {
+            data_entry = kmalloc(sizeof(*data_entry), GFP_KERNEL);
+            if (data_entry) {
+                data_entry->data = file->data;
+                INIT_LIST_HEAD(&data_entry->list);
+                list_add_tail(&data_entry->list, &data_list);
+            }
+            /* если kmalloc не удалось — лучше утечка, чем double-free */
+        }
+    }
+    up_read(&dir->sem);
+
+    /*
+     * 2) Удаляем все vtfs_file (и рекурсивно поддиректории), но НЕ kfree(file->data) здесь.
+     */
     down_write(&dir->sem);
     list_for_each_entry_safe(file, tmp, &dir->files, list) {
         list_del(&file->list);
@@ -118,13 +161,30 @@ void vtfs_cleanup_dir(struct vtfs_dir* dir) {
         if (file->dir_data) {
             vtfs_cleanup_dir(file->dir_data);
             kfree(file->dir_data);
+            file->dir_data = NULL;
         }
 
-        kfree(file->data);
+        /* данные освобождаем отдельно */
+        file->data = NULL;
+        file->data_size = 0;
+
         kfree(file);
     }
     up_write(&dir->sem);
+
+    /*
+     * 3) Освобождаем каждый уникальный data-буфер ровно один раз
+     */
+    list_for_each_entry_safe(data_entry, data_tmp, &data_list, list) {
+        void *data_ptr = data_entry->data;
+        list_del(&data_entry->list);
+        kfree(data_entry);
+
+        if (data_ptr)
+            kfree(data_ptr);
+    }
 }
+
 
 struct vtfs_dir* vtfs_get_dir(struct super_block* sb, struct inode* inode) {
     struct vtfs_fs_info* info;
