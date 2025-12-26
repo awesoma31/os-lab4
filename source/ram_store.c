@@ -160,12 +160,14 @@ struct vtfs_file* vtfs_get_file_by_inode(struct inode* inode) {
     return vtfs_find_file_by_ino(&info->root_dir, inode->i_ino);
 }
 
-void vtfs_update_nlink_all(struct vtfs_dir* dir, ino_t ino, unsigned int nlink) {
+void vtfs_update_nlink_all(struct vtfs_dir* dir, ino_t ino, unsigned int nlink)
+{
     struct vtfs_file* file;
 
     if (!dir)
         return;
 
+    /* обновляем текущий каталог */
     down_write(&dir->sem);
     list_for_each_entry(file, &dir->files, list) {
         if (file->ino == ino)
@@ -173,6 +175,7 @@ void vtfs_update_nlink_all(struct vtfs_dir* dir, ino_t ino, unsigned int nlink) 
     }
     up_write(&dir->sem);
 
+    /* рекурсивно спускаемся в подкаталоги */
     down_read(&dir->sem);
     list_for_each_entry(file, &dir->files, list) {
         if (file->dir_data)
@@ -181,27 +184,35 @@ void vtfs_update_nlink_all(struct vtfs_dir* dir, ino_t ino, unsigned int nlink) 
     up_read(&dir->sem);
 }
 
+
 void vtfs_update_data_all(
     struct vtfs_dir* dir,
     ino_t ino,
     char* old_data,
     char* new_data,
     size_t new_size
-) {
+)
+{
     struct vtfs_file* file;
 
     if (!dir)
         return;
 
+    /* обновляем текущий каталог */
     down_write(&dir->sem);
     list_for_each_entry(file, &dir->files, list) {
-        if (file->ino == ino && file->data == old_data) {
-            file->data = new_data;
+        if (file->ino == ino) {
+            /* размер должен быть одинаков у всех hard links */
             file->data_size = new_size;
+
+            /* указатель меняем только у тех, кто ещё держит old_data */
+            if (file->data == old_data)
+                file->data = new_data;
         }
     }
     up_write(&dir->sem);
 
+    /* рекурсивно спускаемся в подкаталоги */
     down_read(&dir->sem);
     list_for_each_entry(file, &dir->files, list) {
         if (file->dir_data)
@@ -209,6 +220,7 @@ void vtfs_update_data_all(
     }
     up_read(&dir->sem);
 }
+
 
 void vtfs_remove_all_by_ino(struct vtfs_dir* dir, ino_t ino) {
     struct vtfs_file* file;

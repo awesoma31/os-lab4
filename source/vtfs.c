@@ -29,7 +29,7 @@ static int vtfs_fill_super(struct super_block *sb, void *data, int silent)
     inode = vtfs_get_inode(
         sb,
         NULL,
-        S_IFDIR | 0755,
+        S_IFDIR | 0777,
         VTFS_ROOT_INO
     );
     if (!inode)

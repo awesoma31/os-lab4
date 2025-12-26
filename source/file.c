@@ -1,4 +1,5 @@
 #include "vtfs.h"
+#include <linux/printk.h>
 
 int vtfs_open(struct inode* inode, struct file* filp)
 {
@@ -32,6 +33,8 @@ ssize_t vtfs_read(struct file* filp, char __user* buffer,
     struct vtfs_file* file = vtfs_get_file_by_inode(inode);
     size_t to_read;
 
+    
+
     if (!file || !file->data)
         return 0;
 
@@ -53,7 +56,8 @@ ssize_t vtfs_write(struct file* filp, const char __user* buffer,
     struct inode* inode = filp->f_inode;
     struct vtfs_file* file = vtfs_get_file_by_inode(inode);
     struct vtfs_fs_info* info = inode->i_sb->s_fs_info;
-    char* new_data;
+    char *new_data;
+    char *old_data;
     size_t new_size;
 
     if (!file)
@@ -62,22 +66,28 @@ ssize_t vtfs_write(struct file* filp, const char __user* buffer,
     if (filp->f_flags & O_APPEND)
         *offset = file->data_size;
 
+    old_data = file->data;
     new_size = *offset + len;
-    new_data = krealloc(file->data, new_size, GFP_KERNEL);
+
+    new_data = krealloc(old_data, new_size, GFP_KERNEL);
     if (!new_data)
         return -ENOMEM;
 
     if (file->data_size < *offset)
-        memset(new_data + file->data_size, 0,
-               *offset - file->data_size);
+        memset(new_data + file->data_size, 0, *offset - file->data_size);
 
-    if (info && file->data && file->data != new_data) {
+    /* ВАЖНО: если есть hard links — обновлять ВСЕ записи этого ino */
+    if (info && file->nlink > 1) {
         vtfs_update_data_all(&info->root_dir,
                              inode->i_ino,
-                             file->data,
+                             old_data,     /* может быть NULL */
                              new_data,
                              new_size);
+
+        /* заново возьмём file, т.к. vtfs_get_file_by_inode может вернуть другой entry */
         file = vtfs_get_file_by_inode(inode);
+        if (!file)
+            return -ENOENT;
     } else {
         file->data = new_data;
         file->data_size = new_size;
