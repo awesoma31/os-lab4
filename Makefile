@@ -72,6 +72,10 @@ mount:
 	@sudo mkdir -p $(MOUNT_POINT)
 	@sudo mount -t vtfs none $(MOUNT_POINT)
 
+move:
+	@cd @(MOUNT_POINT)
+	@sudo chown awesoma:awesoma .
+
 umount:
 	@# Make sure we are not inside mount point
 	@cd / || true
