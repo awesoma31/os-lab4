@@ -2,7 +2,6 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 
-// ok
 struct vtfs_file* vtfs_find_file_by_ino(struct vtfs_dir* dir, ino_t ino) {
   struct vtfs_file* file;
   
@@ -26,7 +25,6 @@ struct vtfs_file* vtfs_find_file_by_ino(struct vtfs_dir* dir, ino_t ino) {
   return NULL;
 }
 
-// ok
 struct vtfs_file* vtfs_find_file(struct vtfs_dir* dir, const char* name) {
   struct vtfs_file* file;
   if (!dir) return NULL;
@@ -38,7 +36,6 @@ struct vtfs_file* vtfs_find_file(struct vtfs_dir* dir, const char* name) {
   }
   return NULL;
 }
-
 
 struct vtfs_file* vtfs_create_file(
     struct vtfs_dir* dir,
